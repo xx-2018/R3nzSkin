@@ -197,10 +197,17 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="HookInjector.cpp">
+      <CompileAsManaged Condition="'$(Configuration)|$(Platform)'=='ChinaServer|Win32'">false</CompileAsManaged>
+      <CompileAsManaged Condition="'$(Configuration)|$(Platform)'=='ChinaServer|x64'">false</CompileAsManaged>
+      <CompileAsManaged Condition="'$(Configuration)|$(Platform)'=='RiotGamesServers|Win32'">false</CompileAsManaged>
+      <CompileAsManaged Condition="'$(Configuration)|$(Platform)'=='RiotGamesServers|x64'">false</CompileAsManaged>
+    </ClCompile>
     <ClCompile Include="Injector.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="HookInjector.hpp" />
     <ClInclude Include="Injector.hpp" />
     <ClInclude Include="lazy_importer.hpp" />
     <ClInclude Include="R3nzUI.hpp">

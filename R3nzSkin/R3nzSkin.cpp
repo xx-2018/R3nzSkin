@@ -6,24 +6,44 @@
 #include <thread>
 
 #include "CheatManager.hpp"
-
 #include "Config.hpp"
 #include "Hooks.hpp"
 #include "Memory.hpp"
-
 #include "SDK/GameState.hpp"
+
+// Anti-detection includes
+#include "AntiDetection.hpp"
+#include "CompileTimeRandom.hpp"
+
+// Exported hook procedure for SetWindowsHookEx injection
+// This function does nothing but allows the DLL to be loaded into the target process
+extern "C" __declspec(dllexport) LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
+
+// Exported hook procedure for GetMessage hook (alternative)
+extern "C" __declspec(dllexport) LRESULT CALLBACK GetMsgProc(int nCode, WPARAM wParam, LPARAM lParam) {
+	return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
 
 bool WINAPI HideThread(const HANDLE hThread) noexcept
 {
 	__try {
+		// Obfuscated string for "NtSetInformationThread"
+		// Using simple stack string construction to avoid static string analysis
+		wchar_t ntdllStr[] = { 'n','t','d','l','l','.','d','l','l','\0' };
+		char funcStr[] = { 'N','t','S','e','t','I','n','f','o','r','m','a','t','i','o','n','T','h','r','e','a','d','\0' };
+		
 		using FnSetInformationThread = NTSTATUS(NTAPI*)(HANDLE ThreadHandle, UINT ThreadInformationClass, PVOID ThreadInformation, ULONG ThreadInformationLength);
-		const auto NtSetInformationThread{ reinterpret_cast<FnSetInformationThread>(::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtSetInformationThread")) };
+		const auto NtSetInformationThread{ reinterpret_cast<FnSetInformationThread>(::GetProcAddress(::GetModuleHandleW(ntdllStr), funcStr)) };
 
 		if (!NtSetInformationThread)
 			return false;
 
-		if (const auto status{ NtSetInformationThread(hThread, 0x11u, nullptr, 0ul) }; status == 0x00000000)
-			return true;
+		// Use random thread info class offset (0x11 is ThreadHideFromDebugger)
+		// We use 0x11 directly but could randomize the call timing
+		const auto status{ NtSetInformationThread(hThread, 0x11u, nullptr, 0ul) };
+		return status == 0x00000000;
 	} __except (TRUE) {
 		return false;
 	}
@@ -34,10 +54,15 @@ __declspec(safebuffers) static void WINAPI DllAttach([[maybe_unused]] LPVOID lp)
 {
 	using namespace std::chrono_literals;
 
+	// Anti-sandbox delay
+	RANDOM_DELAY();
+
 	cheatManager.start();
+	
 	if (HideThread(::GetCurrentThread()))
 		cheatManager.logger->addLog("Thread Hidden!\n");
 
+	// Wait for game to be ready
 	cheatManager.memory->Search(true);
 	while (true) {
 		std::this_thread::sleep_for(1s);
@@ -69,15 +94,22 @@ __declspec(safebuffers) static void WINAPI DllAttach([[maybe_unused]] LPVOID lp)
 
 __declspec(safebuffers) BOOL APIENTRY DllMain(const HMODULE hModule, const DWORD reason, [[maybe_unused]] LPVOID reserved)
 {
-	DisableThreadLibraryCalls(hModule);
+	if (reason == DLL_PROCESS_ATTACH) {
+		DisableThreadLibraryCalls(hModule);
 
-	if (reason != DLL_PROCESS_ATTACH)
-		return FALSE;
+		// Environment Check
+		if (AntiDetection::IsUnderMonitoring()) {
+			// Silently fail or crash safely
+			return FALSE;
+		}
 
-	HideThread(hModule);
-	std::setlocale(LC_ALL, ".utf8");
+		HideThread(hModule);
+		std::setlocale(LC_ALL, ".utf8");
 
-	::_beginthreadex(nullptr, 0u, reinterpret_cast<_beginthreadex_proc_type>(DllAttach), nullptr, 0u, nullptr);
-	::CloseHandle(hModule);
-	return TRUE;
+		::_beginthreadex(nullptr, 0u, reinterpret_cast<_beginthreadex_proc_type>(DllAttach), nullptr, 0u, nullptr);
+		::CloseHandle(hModule);
+		return TRUE;
+	}
+	
+	return FALSE;
 }

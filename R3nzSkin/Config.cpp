@@ -1,108 +1,212 @@
-#include <fstream>
+#include <Windows.h>
 #include <string>
 #include <system_error>
 
-#include <Windows.h>
-#include <ShlObj.h>
-
-#include "Json/json.hpp"
-
 #include "CheatManager.hpp"
+#include "Config.hpp"
 #include "Memory.hpp"
-#include "Utils.hpp"
+
+// Registry path disguised as Windows Game Overlay (for stealth)
+const wchar_t* Config::registryPath = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameOverlay";
+
+// Helper: Save DWORD to registry
+bool Config::saveToRegistry(const wchar_t* valueName, DWORD data) noexcept
+{
+	HKEY hKey;
+	if (::RegCreateKeyExW(HKEY_CURRENT_USER, registryPath, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
+		return false;
+
+	const auto result{ ::RegSetValueExW(hKey, valueName, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&data), sizeof(DWORD)) == ERROR_SUCCESS };
+	::RegCloseKey(hKey);
+	return result;
+}
+
+// Helper: Save string to registry
+bool Config::saveToRegistry(const wchar_t* valueName, const std::wstring& data) noexcept
+{
+	HKEY hKey;
+	if (::RegCreateKeyExW(HKEY_CURRENT_USER, registryPath, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
+		return false;
+
+	const auto result{ ::RegSetValueExW(hKey, valueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(data.c_str()), static_cast<DWORD>((data.length() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS };
+	::RegCloseKey(hKey);
+	return result;
+}
+
+// Helper: Load DWORD from registry
+DWORD Config::loadFromRegistry(const wchar_t* valueName, DWORD defaultValue) noexcept
+{
+	HKEY hKey;
+	if (::RegOpenKeyExW(HKEY_CURRENT_USER, registryPath, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+		return defaultValue;
+
+	DWORD data{ 0 };
+	DWORD dataSize{ sizeof(DWORD) };
+	DWORD type{ 0 };
+
+	if (::RegQueryValueExW(hKey, valueName, nullptr, &type, reinterpret_cast<BYTE*>(&data), &dataSize) != ERROR_SUCCESS || type != REG_DWORD) {
+		::RegCloseKey(hKey);
+		return defaultValue;
+	}
+
+	::RegCloseKey(hKey);
+	return data;
+}
+
+// Helper: Load string from registry
+std::wstring Config::loadFromRegistry(const wchar_t* valueName, const std::wstring& defaultValue) noexcept
+{
+	HKEY hKey;
+	if (::RegOpenKeyExW(HKEY_CURRENT_USER, registryPath, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+		return defaultValue;
+
+	DWORD dataSize{ 0 };
+	DWORD type{ 0 };
+
+	// Get size first
+	if (::RegQueryValueExW(hKey, valueName, nullptr, &type, nullptr, &dataSize) != ERROR_SUCCESS || type != REG_SZ) {
+		::RegCloseKey(hKey);
+		return defaultValue;
+	}
+
+	std::wstring data(dataSize / sizeof(wchar_t), L'\0');
+	if (::RegQueryValueExW(hKey, valueName, nullptr, nullptr, reinterpret_cast<BYTE*>(&data[0]), &dataSize) != ERROR_SUCCESS) {
+		::RegCloseKey(hKey);
+		return defaultValue;
+	}
+
+	::RegCloseKey(hKey);
+	
+	// Remove null terminator
+	if (!data.empty() && data.back() == L'\0')
+		data.pop_back();
+		
+	return data;
+}
 
 void Config::init() noexcept
 {
-	if (PWSTR pathToDocuments; SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &pathToDocuments))) {
-		this->path = pathToDocuments;
-		CoTaskMemFree(pathToDocuments);
-	}
-
-	this->path /= "R3nzSkin";
+	// Nothing needed for registry-based config
 }
 
 void Config::save() noexcept
 {
 	const auto player{ cheatManager.memory->localPlayer };
-	std::error_code ec;
-	std::filesystem::create_directory(this->path, ec);
-	auto out{ std::ofstream(this->path / u8"R3nzSkin64")};
 
-	if (!out.good())
-		return;
+	// Save player skin config
+	if (player) {
+		const auto championName{ std::string(player->get_character_data_stack()->base_skin.model.str) };
+		saveToRegistry((L"PlayerSkin_" + std::wstring(championName.begin(), championName.end())).c_str(), static_cast<DWORD>(this->current_combo_skin_index));
+	}
 
-	if (player)
-		config_json[std::string(player->get_character_data_stack()->base_skin.model.str) + ".current_combo_skin_index"] = this->current_combo_skin_index;
+	// Save hotkeys
+	saveToRegistry(L"MenuKey", static_cast<DWORD>(this->menuKey.getKey()));
+	saveToRegistry(L"NextSkinKey", static_cast<DWORD>(this->nextSkinKey.getKey()));
+	saveToRegistry(L"PrevSkinKey", static_cast<DWORD>(this->previousSkinKey.getKey()));
 
-	config_json["menuKey"] = this->menuKey.toString();
-	config_json["nextSkinKey"] = this->nextSkinKey.toString();
-	config_json["previousSkinKey"] = this->previousSkinKey.toString();
-	config_json["heroName"] = this->heroName;
-	config_json["raibowText"] = this->rainbowText;
-	config_json["quickSkinChange"] = this->quickSkinChange;
-	config_json["isOpen"] = this->isOpen;
-	config_json["fontScale"] = this->fontScale;
-	config_json["current_combo_ward_index"] = this->current_combo_ward_index;
-	config_json["current_ward_skin_index"] = this->current_ward_skin_index;
-	config_json["current_minion_skin_index"] = this->current_minion_skin_index;
+	// Save options
+	saveToRegistry(L"HeroName", static_cast<DWORD>(this->heroName ? 1 : 0));
+	saveToRegistry(L"RainbowText", static_cast<DWORD>(this->rainbowText ? 1 : 0));
+	saveToRegistry(L"QuickSkinChange", static_cast<DWORD>(this->quickSkinChange ? 1 : 0));
+	saveToRegistry(L"IsOpen", static_cast<DWORD>(this->isOpen ? 1 : 0));
 
-	for (const auto& [fst, snd] : this->current_combo_ally_skin_index)
-		config_json["current_combo_ally_skin_index"][std::to_string(fst)] = snd;
+	// Save float as bits
+	const auto fontScaleBits{ *reinterpret_cast<const DWORD*>(&this->fontScale) };
+	saveToRegistry(L"FontScale", fontScaleBits);
 
-	for (const auto& [fst, snd] : this->current_combo_enemy_skin_index)
-		config_json["current_combo_enemy_skin_index"][std::to_string(fst)] = snd;
+	// Save ward and minion config
+	saveToRegistry(L"WardIndex", static_cast<DWORD>(this->current_combo_ward_index));
+	saveToRegistry(L"WardSkin", static_cast<DWORD>(this->current_ward_skin_index));
+	saveToRegistry(L"MinionSkin", static_cast<DWORD>(this->current_minion_skin_index));
 
-	for (const auto& [fst, snd] : this->current_combo_jungle_mob_skin_index)
-		config_json["current_combo_jungle_mob_skin_index"][std::to_string(fst)] = snd;
+	// Save ally skins as JSON string
+	if (!this->current_combo_ally_skin_index.empty()) {
+		json ally_json;
+		for (const auto& [hash, skinIdx] : this->current_combo_ally_skin_index)
+			ally_json[std::to_string(hash)] = skinIdx;
+		const auto jsonStr{ ally_json.dump() };
+		saveToRegistry(L"AllySkins", std::wstring(jsonStr.begin(), jsonStr.end()));
+	}
 
-	out << config_json.dump();
-	out.close();
+	// Save enemy skins as JSON string
+	if (!this->current_combo_enemy_skin_index.empty()) {
+		json enemy_json;
+		for (const auto& [hash, skinIdx] : this->current_combo_enemy_skin_index)
+			enemy_json[std::to_string(hash)] = skinIdx;
+		const auto jsonStr{ enemy_json.dump() };
+		saveToRegistry(L"EnemySkins", std::wstring(jsonStr.begin(), jsonStr.end()));
+	}
+
+	// Save jungle mob skins as JSON string
+	if (!this->current_combo_jungle_mob_skin_index.empty()) {
+		json jungle_json;
+		for (const auto& [hash, skinIdx] : this->current_combo_jungle_mob_skin_index)
+			jungle_json[std::to_string(hash)] = skinIdx;
+		const auto jsonStr{ jungle_json.dump() };
+		saveToRegistry(L"JungleSkins", std::wstring(jsonStr.begin(), jsonStr.end()));
+	}
 }
 
 void Config::load() noexcept
 {
 	const auto player{ cheatManager.memory->localPlayer };
-	auto in{ std::ifstream(this->path / u8"R3nzSkin64") };
 
-	if (!in.good())
-		return;
+	// Load player skin config
+	if (player) {
+		const auto championName{ std::string(player->get_character_data_stack()->base_skin.model.str) };
+		this->current_combo_skin_index = static_cast<std::int32_t>(loadFromRegistry((L"PlayerSkin_" + std::wstring(championName.begin(), championName.end())).c_str(), 0));
+	}
 
-	if (json j{ json::parse(in, nullptr, false, true) }; j.is_discarded())
-		return;
-	else
-		config_json = j;
+	// Load hotkeys
+	this->menuKey = KeyBind(static_cast<KeyBind::KeyCode>(loadFromRegistry(L"MenuKey", KeyBind::INSERT)));
+	this->nextSkinKey = KeyBind(static_cast<KeyBind::KeyCode>(loadFromRegistry(L"NextSkinKey", KeyBind::PAGE_UP)));
+	this->previousSkinKey = KeyBind(static_cast<KeyBind::KeyCode>(loadFromRegistry(L"PrevSkinKey", KeyBind::PAGE_DOWN)));
 
-	if (player)
-		this->current_combo_skin_index = config_json.value(std::string(player->get_character_data_stack()->base_skin.model.str) + ".current_combo_skin_index", 0);
+	// Load options
+	this->heroName = loadFromRegistry(L"HeroName", 1) != 0;
+	this->rainbowText = loadFromRegistry(L"RainbowText", 0) != 0;
+	this->quickSkinChange = loadFromRegistry(L"QuickSkinChange", 0) != 0;
+	this->isOpen = loadFromRegistry(L"IsOpen", 1) != 0;
 
-	this->menuKey = KeyBind(config_json.value("menuKey", "INSERT").c_str());
-	this->nextSkinKey = KeyBind(config_json.value("nextSkinKey", "PAGE_UP").c_str());
-	this->previousSkinKey = KeyBind(config_json.value("previousSkinKey", "PAGE_DOWN").c_str());
-	this->heroName = config_json.value("heroName", true);
-	this->rainbowText = config_json.value("raibowText", false);
-	this->quickSkinChange = config_json.value("quickSkinChange", false);
-	this->isOpen = config_json.value("isOpen", true);
-	this->fontScale = config_json.value("fontScale", 1.0f);
-	this->current_combo_ward_index = config_json.value("current_combo_ward_index", 0);
-	this->current_ward_skin_index = config_json.value("current_ward_skin_index", -1);
-	this->current_minion_skin_index = config_json.value("current_minion_skin_index", -1);
+	// Load float from bits
+	static const float defaultFontScale = 1.0f;
+	const auto fontScaleBits{ loadFromRegistry(L"FontScale", *reinterpret_cast<const DWORD*>(&defaultFontScale)) };
+	this->fontScale = *reinterpret_cast<const float*>(&fontScaleBits);
 
-	const auto ally_skins{ config_json.find("current_combo_ally_skin_index") };
-	if (ally_skins != config_json.end())
-		for (const auto& it : ally_skins.value().items())
-			this->current_combo_ally_skin_index[std::stoull(it.key())] = it.value().get<std::int32_t>();
+	// Load ward and minion config
+	this->current_combo_ward_index = static_cast<std::int32_t>(loadFromRegistry(L"WardIndex", 0));
+	this->current_ward_skin_index = static_cast<std::int32_t>(loadFromRegistry(L"WardSkin", static_cast<DWORD>(-1)));
+	this->current_minion_skin_index = static_cast<std::int32_t>(loadFromRegistry(L"MinionSkin", static_cast<DWORD>(-1)));
 
-	const auto enemy_skins{ config_json.find("current_combo_enemy_skin_index") };
-	if (enemy_skins != config_json.end())
-		for (const auto& it : enemy_skins.value().items())
-			this->current_combo_enemy_skin_index[std::stoull(it.key())] = it.value().get<std::int32_t>();
+	// Load ally skins from JSON
+	const auto allySkinsStr{ loadFromRegistry(L"AllySkins", L"") };
+	if (!allySkinsStr.empty()) {
+		try {
+			json ally_json = json::parse(std::string(allySkinsStr.begin(), allySkinsStr.end()));
+			for (const auto& [key, value] : ally_json.items())
+				this->current_combo_ally_skin_index[std::stoull(key)] = value.get<std::int32_t>();
+		} catch (...) {}
+	}
 
-	const auto jungle_mobs_skins{ config_json.find("current_combo_jungle_mob_skin_index") };
-	if (jungle_mobs_skins != config_json.end())
-		for (const auto& it : jungle_mobs_skins.value().items())
-			this->current_combo_jungle_mob_skin_index[std::stoull(it.key())] = it.value().get<std::int32_t>();
+	// Load enemy skins from JSON
+	const auto enemySkinsStr{ loadFromRegistry(L"EnemySkins", L"") };
+	if (!enemySkinsStr.empty()) {
+		try {
+			json enemy_json = json::parse(std::string(enemySkinsStr.begin(), enemySkinsStr.end()));
+			for (const auto& [key, value] : enemy_json.items())
+				this->current_combo_enemy_skin_index[std::stoull(key)] = value.get<std::int32_t>();
+		} catch (...) {}
+	}
 
-	in.close();
+	// Load jungle mob skins from JSON
+	const auto jungleSkinsStr{ loadFromRegistry(L"JungleSkins", L"") };
+	if (!jungleSkinsStr.empty()) {
+		try {
+			json jungle_json = json::parse(std::string(jungleSkinsStr.begin(), jungleSkinsStr.end()));
+			for (const auto& [key, value] : jungle_json.items())
+				this->current_combo_jungle_mob_skin_index[std::stoull(key)] = value.get<std::int32_t>();
+		} catch (...) {}
+	}
 }
 
 void Config::reset() noexcept
@@ -111,7 +215,7 @@ void Config::reset() noexcept
 	this->nextSkinKey = KeyBind(KeyBind::PAGE_UP);
 	this->previousSkinKey = KeyBind(KeyBind::PAGE_DOWN);
 	this->heroName = true;
-	this->rainbowText = true;
+	this->rainbowText = false;
 	this->quickSkinChange = false;
 	this->isOpen = true;
 	this->fontScale = 1.0f;

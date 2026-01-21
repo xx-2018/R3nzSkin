@@ -1,15 +1,16 @@
 #pragma once
 
+#include <Windows.h>
 #include <cstdint>
-#include <filesystem>
 #include <map>
+#include <string>
 
 #include "json/json.hpp"
-
 #include "Utils.hpp"
 
 using json = nlohmann::json;
 
+// Registry configuration for stealth - no file traces
 class Config {
 public:
 	void init() noexcept;
@@ -25,6 +26,7 @@ public:
 	bool heroName{ true };
 	bool quickSkinChange{ false };
 	bool isOpen{ true };
+	
 	// player
 	std::int32_t current_combo_skin_index{ 0 };
 
@@ -46,7 +48,14 @@ public:
 
 	// jungle mobs
 	std::map<std::uint64_t, std::int32_t> current_combo_jungle_mob_skin_index;
+	
 private:
-	std::filesystem::path path;
+	// Registry operations - disguised as Windows Game Overlay
+	bool saveToRegistry(const wchar_t* valueName, DWORD data) noexcept;
+	bool saveToRegistry(const wchar_t* valueName, const std::wstring& data) noexcept;
+	DWORD loadFromRegistry(const wchar_t* valueName, DWORD defaultValue) noexcept;
+	std::wstring loadFromRegistry(const wchar_t* valueName, const std::wstring& defaultValue) noexcept;
+	
+	static const wchar_t* registryPath; // HKCU\Software\Microsoft\Windows\CurrentVersion\GameOverlay
 	json config_json{ json() };
 };
